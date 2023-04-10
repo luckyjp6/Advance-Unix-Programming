@@ -96,22 +96,21 @@ char* get_path(char *instruction) {
     exit(-1);
 }
 
-int __libc_start_main(int (*main) (int, char * *, char * *), int argc, char * * ubp_av, void (*init) (void), void (*fini) (void), void (*rtld_fini) (void), void (* stack_end)) {
+int __libc_start_main(int (*main) (int, char * *, char * *), int argc, char * * argv, void (*init) (void), void (*fini) (void), void (*rtld_fini) (void), void (* stack_end)) {
 // int main() {
     printf("argc: %d\n", argc);
-    for (int i = 0; i < argc; i++) printf("%d %s\n", i, ubp_av[i]);
-    char *real_start = get_path("__libc_start_main");
-    // char *path = get_path(ubp_av[0]);
-    // printf("path: %s\n", path);
+    for (int i = 0; i < argc; i++) printf("%d %s\n", i, argv[i]);
+    char *path = get_path(argv[0]);
+    printf("path: %s\n", path);
     // parse_elf(path);
     // void* handle = dlopen(path, RTLD_LAZY);
-    void* handle = dlopen("./launcher", RTLD_LAZY);
+    void* handle = dlopen("/lib/x86_64-linux-gnu/libc.so.6", RTLD_LAZY);
     if (!handle) errquit(dlerror());
-    // void (*real_start)() = dlsym(handle, "__libc_start_main");
-    // if (!real_start) {
-    //     dlclose(handle);
-    //     errquit("can't get real __libc_start_main");
-    // }
-    // real_start(main, argc, ubp_av, init, fini, rtld_fini, stack_end);
+    void (*real_start)() = dlsym(handle, "__libc_start_main");
+    if (!real_start) {
+        dlclose(handle);
+        errquit("can't get real __libc_start_main");
+    }
+    real_start(main, argc, argv, init, fini, rtld_fini, stack_end);
     return 0;
 }

@@ -1,5 +1,5 @@
 all: sandbox.so
-	./launcher ./sandbox.so config.txt echo "123"
+	./launcher ./sandbox.so config.txt ls
 sandbox.so: sandbox.c
 	gcc -o sandbox.so -shared -fPIC sandbox.c -ldl
 test:
