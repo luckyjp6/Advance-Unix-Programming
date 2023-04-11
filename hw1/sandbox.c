@@ -61,10 +61,9 @@ void get_write_previlage(long int addr, int recover) {
     uintptr_t ali = (uintptr_t)A;
     ali = ali & 0xfffffffff000;
     void *ali_ptr = (void *)ali;
-    printf("expected: from %p to %p\n", addr, addr+0x5000);
-    printf("actually requested: from %p ot %p\n", ali_ptr, ali_ptr + 0x5000);
-    if (recover) if (mprotect(ali_ptr, 0x5000, PROT_EXEC) < 0) errquit("mprotect failed");
-    else if (mprotect(ali_ptr, 0x5000, PROT_READ | PROT_WRITE | PROT_EXEC) < 0) errquit("mprotect failed");
+    printf("expected: from %p to %p\n", addr, addr+0x1000);
+    printf("actually requested: from %p ot %p\n", ali_ptr, ali_ptr + 0x1000);
+    if (mprotect(ali_ptr, 0x1000, PROT_READ | PROT_WRITE | PROT_EXEC) < 0) errquit("mprotect failed");
 }
 
 void parse_elf(const char* elf_file, long int start_addr) {
@@ -82,7 +81,7 @@ void parse_elf(const char* elf_file, long int start_addr) {
     // get section header
     int section_hdr_off = header.e_shoff;
     int section_hdr_num = header.e_shnum;
-    Elf64_Shdr shdr[200];
+    Elf64_Shdr shdr[1000];
     char name_table[20000];
     if (lseek(fd, section_hdr_off, SEEK_SET) != section_hdr_off) errquit("section hdr seek");
     if (read(fd, &shdr, section_hdr_num*sizeof(Elf64_Shdr)) < 0) errquit("section hdr read");
@@ -106,7 +105,7 @@ void parse_elf(const char* elf_file, long int start_addr) {
     if (str_table_idx < 0) errquit(".dynstr not found");
 
     // get section .dynsym
-    Elf64_Sym sym_name[200];
+    Elf64_Sym sym_name[1000];
     if (lseek(fd, shdr[sym_table_idx].sh_offset, SEEK_SET) < 0) errquit(".dynsym seek");
     if (read(fd, &sym_name, shdr[sym_table_idx].sh_size) < 0) errquit(".dynsym read");
 
