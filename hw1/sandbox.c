@@ -18,6 +18,13 @@ void errquit(char *msg) {
     exit(0);
 }
 
+void print_Elf64_Sym(Elf64_Sym tmp) {
+    printf("name: %x, bind: %d, type: %d, other: %d, section: %d, value: %x, size: %x\n", 
+                tmp.st_name, ELF64_ST_BIND(tmp.st_info), ELF64_ST_TYPE(tmp.st_info),
+                tmp.st_shndx, tmp.st_value, tmp.st_size
+                );
+}
+
 void parse_elf(const char* elf_file) {
     ElfW(Ehdr) header;
 
@@ -46,21 +53,26 @@ void parse_elf(const char* elf_file) {
     if (lseek(fd, shdr[name_idx].sh_offset, SEEK_SET) < 0) errquit("section name table seek");
     if (read(fd, name_table, shdr[name_idx].sh_size) < 0) errquit("section name table read");
 
+    // get section idx
+    int rela_plt_idx, sym_table_idx, str_table_idx;
     for (int i = 0; i < section_hdr_num; i++) {
-        printf("%s\t", &name_table[shdr[i].sh_name]);
+        if (strcmp(&name_table[shdr[i].sh_name], ".rela.plt") == 0) rela_plt_idx = i;
+        if (strcmp(&name_table[shdr[i].sh_name], ".dynsym") == 0) sym_table_idx = i;
+        if (strcmp(&name_table[shdr[i].sh_name], ".dynstr") == 0) str_table_idx = i;
+        // printf("%s\t", &name_table[shdr[i].sh_name]);
         // switch(shdr[i].sh_type) {
-        //     case 0 : printf("SHT_NULL"); break;
+        //     case 0 : printf("SHT_NULL\t"); break;
         //     case 1 : printf("SHT_PROGBITS"); break;
-        //     case 2 : printf("SHT_SYMTAB"); break;
-        //     case 3 : printf("SHT_STRTAB"); break;
-        //     case 4 : printf("SHT_RELA"); break;
-        //     case 5 : printf("SHT_HASH"); break;
-        //     case 6 : printf("SHT_DYNAMIC"); break;
-        //     case 7 : printf("SHT_NOTE"); break;
-        //     case 8 : printf("SHT_NOBITS"); break;
-        //     case 9 : printf("SHT_REL"); break;
-        //     case 10 : printf("SHT_SHLIB"); break;
-        //     case 11 : printf("SHT_DYNSYM"); break;
+        //     case 2 : printf("SHT_SYMTAB\t"); break;
+        //     case 3 : printf("SHT_STRTAB\t"); break;
+        //     case 4 : printf("SHT_RELA\t"); break;
+        //     case 5 : printf("SHT_HASH\t"); break;
+        //     case 6 : printf("SHT_DYNAMIC\t"); break;
+        //     case 7 : printf("SHT_NOTE\t"); break;
+        //     case 8 : printf("SHT_NOBITS\t"); break;
+        //     case 9 : printf("SHT_REL\t"); break;
+        //     case 10 : printf("SHT_SHLIB\t"); break;
+        //     case 11 : printf("SHT_DYNSYM\t"); break;
         //     case 14 : printf("SHT_INIT_ARRAY"); break;
         //     case 15 : printf("SHT_FINI_ARRAY"); break;
         //     case 0x70000000 : printf("SHT_LOPROC"); break;
@@ -71,9 +83,52 @@ void parse_elf(const char* elf_file) {
         //     case 0x6fffffff : printf("SHT_GNU_versym"); break;
         //     case 0x6ffffffe : printf("SHT_GNU_verneed"); break;
         // }
-        printf("\n");
+        // printf("\n");
     }
     
+    if (rela_plt_idx < 0) errquit(".rela.plt not found");
+    if (sym_table_idx < 0) errquit(".rela.plt not found");
+
+    const int record_num = shdr[rela_plt_idx].sh_size/sizeof(Elf64_Rela);
+    printf("rela plt num: %d\n", record_num);
+    // get section .dynsym
+    Elf64_Sym sym_name[200];
+    if (lseek(fd, shdr[sym_table_idx].sh_offset, SEEK_SET) < 0) errquit(".dynsym seek");
+    // if (read(fd, sym_name, shdr[sym_table_idx].sh_size) < 0) errquit(".dynsym read");
+
+    // printf("dynsym size: %d\n", shdr[sym_table_idx].sh_size/24);
+    for (int i = 0; i < record_num; i++) {
+        if (read(fd, &sym_name[i], sizeof(Elf64_Sym)) < 0) errquit(".dynsym read");
+        // print_Elf64_Sym(sym_name[i]);
+    }
+
+    uint16_t name_off = sym_name[0].st_shndx;
+    // get section .dynstr
+    if (lseek(fd, shdr[str_table_idx].sh_offset+name_off, SEEK_SET) < 0) errquit(".dynstr seek");
+    char names[20000];
+    read(fd, names, sizeof(names));
+    // printf("str table size: %d\n", shdr[str_table_idx].sh_size);
+    // for (int i = 0; i < record_num; i++) {
+    //     printf("[%d] %s\n", i, names+sym_name[i].st_name);
+    // }
+    
+    // get section .rela.plt
+    Elf64_Rela record[record_num];
+    if (lseek(fd, shdr[rela_plt_idx].sh_offset, SEEK_SET) < 0) errquit(".rela.plt seek");
+    
+    for (int i = 0; i < record_num; i++) {
+        uint64_t tmp;
+        for (int j = 0; j < 3; j++) {
+            read(fd, &tmp, sizeof(tmp));
+            if (j == 1) printf("%x\t%lx\t", ELF64_R_SYM(tmp), ELF64_R_TYPE(tmp));
+            else printf("%lx\t", tmp);
+        }
+        printf("name: %s", names+sym_name[i].st_name);
+        printf("\n");
+    }
+
+    
+
     close(fd);
     return;
 }
@@ -96,22 +151,24 @@ char* get_path(char *instruction) {
     exit(-1);
 }
 
-int __libc_start_main(int (*main) (int, char * *, char * *), int argc, char * * ubp_av, void (*init) (void), void (*fini) (void), void (*rtld_fini) (void), void (* stack_end)) {
+int __libc_start_main(int (*main) (int, char * *, char * *), int argc, char * * argv, void (*init) (void), void (*fini) (void), void (*rtld_fini) (void), void (* stack_end)) {
 // int main() {
-    printf("argc: %d\n", argc);
-    for (int i = 0; i < argc; i++) printf("%d %s\n", i, ubp_av[i]);
-    char *real_start = get_path("__libc_start_main");
-    // char *path = get_path(ubp_av[0]);
+    // printf("argc: %d\n", argc);
+    // for (int i = 0; i < argc; i++) printf("%d %s\n", i, argv[i]);
+    // char *path = get_path(argv[0]);
+    char path[200];
+    if (readlink("/proc/self/exe", path, sizeof(path)) < 0) errquit("readlink");
     // printf("path: %s\n", path);
-    // parse_elf(path);
+
+    parse_elf(path);
     // void* handle = dlopen(path, RTLD_LAZY);
-    void* handle = dlopen("./launcher", RTLD_LAZY);
+    void* handle = dlopen("/lib/x86_64-linux-gnu/libc.so.6", RTLD_LAZY);
     if (!handle) errquit(dlerror());
-    // void (*real_start)() = dlsym(handle, "__libc_start_main");
-    // if (!real_start) {
-    //     dlclose(handle);
-    //     errquit("can't get real __libc_start_main");
-    // }
-    // real_start(main, argc, ubp_av, init, fini, rtld_fini, stack_end);
+    void (*real_start)() = dlsym(handle, "__libc_start_main");
+    if (!real_start) {
+        dlclose(handle);
+        errquit("can't get real __libc_start_main");
+    }
+    real_start(main, argc, argv, init, fini, rtld_fini, stack_end);
     return 0;
 }
