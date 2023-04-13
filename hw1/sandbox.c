@@ -20,8 +20,8 @@ void errquit(char *msg) {
 }
 
 void print_Elf64_Sym(Elf64_Sym a) {
-    printf("name: %x, bind: %d, type: %d, other: %d, section: %ld, value: %lx, size: %d\n", 
-                a.st_name, ELF64_ST_BIND(a.st_info), ELF64_ST_TYPE(a.st_info),
+    printf("name: %x, bind: %d, type: %d, other: %d, section: %d, value: %lx, size: %ld\n", 
+                a.st_name, ELF64_ST_BIND(a.st_info), ELF64_ST_TYPE(a.st_info), a.st_other,
                 a.st_shndx, a.st_value, a.st_size
                 );
 }
@@ -52,12 +52,64 @@ void print_section_type(Elf64_Shdr a) {
     printf("\n");
 }
 
-void config
+void print_log(char *msg, size_t len) {
+    int logger_fd;
+    char* logger_fd_char = getenv("LOGGER_FD");
+    sscanf(logger_fd_char, "%d", &logger_fd);
 
-int my_open(const char *pathname, int flags, mode_t mode) {
-    printf("my open\n");
+    write(logger_fd, msg, len);
+    return;
 }
 
+int config(const char* wanted, const char* func_name) {
+    // get config file name
+    char* config_name = getenv("SANDBOX_CONFIG");
+
+    // open config
+    int fd = open(config_name, O_RDONLY);
+    char data[100000];
+    read(fd, data, sizeof(data));
+
+    // prepare start & end
+    char begin[50]; sprintf(begin, "BEGIN %s-blacklist", func_name);
+    char end[50]; sprintf(end, "END %s-blacklist", func_name);
+// printf("begin: %s\nend: %s\n", begin, end);
+    // parse lines
+    int start = 0;
+    char *d = data;
+    while (d != NULL) {
+        char* now = strtok_r(d, "\n", &d);
+        if (strcmp(now, begin) == 0) start = 1;
+        if (strcmp(now, end) == 0) break;
+        if (!start) continue;
+
+        if (strcmp(now, wanted) == 0) return -1;
+    }
+
+    return 1;
+}
+
+int my_open(const char *pathname, int flags, mode_t mode) {
+    // printf("my open\n");
+
+    // set mode
+    if (!((flags & O_CREAT) | (flags & O_TRUNC) | (flags & __O_TMPFILE))) mode = 0;
+    
+    int result;
+    if (config(pathname, "open") > 0) {
+        result = open(pathname, flags, mode);
+    }else {
+        result = -1;
+        errno = EACCES;
+    }
+    
+    // logger msg
+    char logger_msg[100];
+    sprintf(logger_msg, "[logger] open(\"%s\", %d, %d) = %d\n", pathname, flags, mode, result);
+    print_log(logger_msg, strlen(logger_msg));
+
+    return result;
+}
 ssize_t my_read(int fd, void *buf, size_t count) {
     // get pid
     int pid = getpid();
@@ -73,10 +125,11 @@ ssize_t my_read(int fd, void *buf, size_t count) {
 
     // logger message
     char logger[100];
-    sprintf(logger, "[logger] write(%d, %p, %ld) = %d\n", fd, buf, count, result);
-    if (write(fd, logger, strlen(logger)) < 0) errquit("logger write");
-}
+    sprintf(logger, "[logger] read(%d, %p, %ld) = %d\n", fd, buf, count, result);
+    print_log(logger, strlen(logger));
 
+    return result;
+}
 ssize_t my_write(int fd, void *buf, size_t count) {
     // get pid
     int pid = getpid();
@@ -93,17 +146,27 @@ ssize_t my_write(int fd, void *buf, size_t count) {
     // logger message
     char logger[100];
     sprintf(logger, "[logger] write(%d, %p, %ld) = %d\n", fd, buf, count, result);
-    if (write(fd, logger, strlen(logger)) < 0) errquit("logger write");
+    print_log(logger, strlen(logger));
+
+    return result;
 }
 
-void get_write_previlage(long int addr, int recover) {
+void get_write_previlage(long int addr) {
     void *A = (void*)addr;
     uintptr_t ali = (uintptr_t)A;
     ali = ali & 0xfffffffff000;
     void *ali_ptr = (void *)ali;
-    printf("expected: from %p to %p\n", addr, addr+0x1000);
-    printf("actually requested: from %p ot %p\n", ali_ptr, ali_ptr + 0x1000);
+    // printf("expected: from %p to %p\n", addr, addr+0x1000);
+    // printf("actually requested: from %p ot %p\n", ali_ptr, ali_ptr + 0x1000);
     if (mprotect(ali_ptr, 0x1000, PROT_READ | PROT_WRITE | PROT_EXEC) < 0) errquit("mprotect failed");
+}
+void replace(unsigned long int addr, char* func) {
+    get_write_previlage(addr);
+    void *handle = dlopen("./sandbox.so", RTLD_LAZY);
+    if (!handle) errquit(dlerror());
+    void (*my_func)() = dlsym(handle, func);
+    if (!my_func) { dlclose(handle); errquit("cant't get my_func"); }
+    memcpy((void *)addr, &my_func, 8);
 }
 
 void parse_elf(const char* elf_file, long int start_addr) {
@@ -162,29 +225,31 @@ void parse_elf(const char* elf_file, long int start_addr) {
     if (lseek(fd, shdr[rela_plt_idx].sh_offset, SEEK_SET) < 0) errquit(".rela.plt seek");
     if (read(fd, &record, shdr[rela_plt_idx].sh_size) < 0) errquit(".rela.plt read");
     
-    int open_idx;
+    int open_idx, read_idx, write_idx, conn_idx, getaddr_idx, sys_idx;
     for (int i = 0; i < record_num; i++) {
         if (strcmp("open", names+sym_name[ELF64_R_SYM(record[i].r_info)].st_name) == 0) open_idx = i;
+        if (strcmp("read", names+sym_name[ELF64_R_SYM(record[i].r_info)].st_name) == 0) read_idx = i;
+        if (strcmp("write", names+sym_name[ELF64_R_SYM(record[i].r_info)].st_name) == 0) write_idx = i;
+        if (strcmp("connect", names+sym_name[ELF64_R_SYM(record[i].r_info)].st_name) == 0) conn_idx = i;
+        if (strcmp("getaddrinfo", names+sym_name[ELF64_R_SYM(record[i].r_info)].st_name) == 0) getaddr_idx = i;
+        if (strcmp("system", names+sym_name[ELF64_R_SYM(record[i].r_info)].st_name) == 0) sys_idx = i;
         // printf("offset: %lx, sym: %lx, type:%lx, addend: %lx, name: %s\n", 
         //     record[i].r_offset, ELF64_R_SYM(record[i].r_info), ELF64_R_TYPE(record[i].r_info),
         //     record[i].r_addend, names+sym_name[ELF64_R_SYM(record[i].r_info)].st_name);
     }
 
-    if (open_idx > 0) {
-        get_write_previlage(start_addr+record[open_idx].r_offset, 0);
-        void *handle = dlopen("./sandbox.so", RTLD_LAZY);
-        if (!handle) errquit(dlerror());
-        void (*my_func)() = dlsym(handle, "my_open");
-        if (!my_func) { dlclose(handle); errquit("cant't get my_func"); }
-        long int test = 0;
-        memcpy(start_addr+record[open_idx].r_offset, &my_func, 8);
-        printf("out\n");
-        get_write_previlage(start_addr+record[open_idx].r_offset, 1);
-    }else printf("can't find open");
+    if (open_idx > 0) replace(start_addr+record[open_idx].r_offset, "my_open");
+    if (read_idx > 0) replace(start_addr+record[read_idx].r_offset, "my_read");
+    if (write_idx > 0) replace(start_addr+record[write_idx].r_offset, "my_write");
+    if (conn_idx > 0) replace(start_addr+record[conn_idx].r_offset, "my_conn");
+    if (getaddr_idx > 0) replace(start_addr+record[getaddr_idx].r_offset, "my_getaddr");
+    if (sys_idx > 0) replace(start_addr+record[sys_idx].r_offset, "my_sys");
+
     
     close(fd);
     return;
 }
+
 
 char* get_path(char *instruction, long int *start_addr) {
     int fd = open("/proc/self/maps", O_RDONLY);
@@ -210,7 +275,7 @@ char* get_path(char *instruction, long int *start_addr) {
 
 int __libc_start_main(int (*main) (int, char * *, char * *), int argc, char * * argv, void (*init) (void), void (*fini) (void), void (*rtld_fini) (void), void (* stack_end)) {
     // printf("argc: %d\n", argc);
-    for (int i = 0; i < argc; i++) printf("%d %s\n", i, argv[i]);
+    // for (int i = 0; i < argc; i++) printf("%d %s\n", i, argv[i]);
     long int start_addr;
     char *path = get_path(argv[0], &start_addr);
     // char path[200];
