@@ -7,6 +7,8 @@
 #include <dlfcn.h>
 #include <errno.h>
 #include <sys/mman.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
 
 #if defined(__LP64__)
 #define ElfW(type) Elf64_ ## type
@@ -61,7 +63,7 @@ void print_log(char *msg, size_t len) {
     return;
 }
 
-int config(const char* wanted, const char* func_name) {
+int config(const char *wanted, const char* func_name) {
     // get config file name
     char* config_name = getenv("SANDBOX_CONFIG");
 
@@ -73,7 +75,7 @@ int config(const char* wanted, const char* func_name) {
     // prepare start & end
     char begin[50]; sprintf(begin, "BEGIN %s-blacklist", func_name);
     char end[50]; sprintf(end, "END %s-blacklist", func_name);
-// printf("begin: %s\nend: %s\n", begin, end);
+    
     // parse lines
     int start = 0;
     char *d = data;
@@ -83,7 +85,15 @@ int config(const char* wanted, const char* func_name) {
         if (strcmp(now, end) == 0) break;
         if (!start) continue;
 
-        if (strcmp(now, wanted) == 0) return -1;
+        if (strcmp(func_name, "open") == 0) {
+            if (strcmp(now, wanted) == 0) return -1;
+        }
+        else if (strcmp(func_name, "read") == 0){
+            if (strstr(wanted, now)) {
+                printf("here");
+                return -1;
+            }
+        }
     }
 
     return 1;
@@ -111,17 +121,49 @@ int my_open(const char *pathname, int flags, mode_t mode) {
     return result;
 }
 ssize_t my_read(int fd, void *buf, size_t count) {
+    int result = read(fd, buf, count);
     // get pid
     int pid = getpid();
 
     // get file name
-    char file_name[50];
-    sprintf(file_name, "./%d-%d-read.log", pid, fd);
-    int log = open(file_name, O_WRONLY | O_CREAT | O_APPEND, S_IRWXU);
-    if (log < 0) errquit("log open");
-    if (write(log, buf, count) < 0) errquit("read_log write");
-    close(log);
-    int result = read(fd, buf, count);
+    // char look_up_name[50];
+    // sprintf(look_up_name, "/proc/self/fd/%d", fd);
+    // int look_up_fd = open(look_up_name, O_RDONLY);
+    // char get_name[50];
+    // read(look_up_fd, get_name, sizeof(get_name));
+    // get_name[strlen(get_name)-1] = 0;
+    // close(look_up_fd);
+
+    // char my_file_name[70];
+    // sprintf(my_file_name, "./%d-%d-read_%s.log", pid, fd, get_name);
+    // int my_log = open(my_file_name, O_WRONLY | O_CREAT | O_APPEND, S_IRWXU);
+    // if (my_log < 0) errquit("my log open");
+
+    // check
+    if (result > 0) {
+        char log_name[50];
+        sprintf(log_name, "./%d-%d-read.log", pid, fd);
+        int log = open(log_name, O_WRONLY | O_CREAT | O_APPEND, S_IRWXU);
+
+        // get now position
+        char tmp[100000];
+        int now_off = lseek(fd, 0, SEEK_CUR);
+
+        // get current file content
+        lseek(log, -now_off, SEEK_END);
+        read(log, tmp, now_off);
+        strcpy(tmp, buf);
+
+        if (config(tmp, "read") > 0) {
+            lseek(log, 0, SEEK_END);
+            write(log, buf, result);
+        }else {
+            close(fd);
+            result = -1;
+            errno = EIO;
+        }
+        close(log);
+    }
 
     // logger message
     char logger[100];
@@ -150,6 +192,17 @@ ssize_t my_write(int fd, void *buf, size_t count) {
 
     return result;
 }
+int my_conn(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
+    static struct sockaddr_in addr_in;
+    memcpy(&addr_in, addr, addrlen);
+    printf("%s:%d", addr_in.sin_addr, addr_in.sin_port);
+
+    return connect(sockfd, addr, addrlen);
+}
+int my_getaddr (const char *restrict node, const char *restrict service, const struct addrinfo *restrict hints, struct addrinfo **restrict res){
+    printf("my_getaddr\n");
+    return getaddr(node, service, hints, res);
+}
 
 void get_write_previlage(long int addr) {
     void *A = (void*)addr;
@@ -165,7 +218,7 @@ void replace(unsigned long int addr, char* func) {
     void *handle = dlopen("./sandbox.so", RTLD_LAZY);
     if (!handle) errquit(dlerror());
     void (*my_func)() = dlsym(handle, func);
-    if (!my_func) { dlclose(handle); errquit("cant't get my_func"); }
+    if (!my_func) { dlclose(handle); errquit("cant't get my_func "); }
     memcpy((void *)addr, &my_func, 8);
 }
 
