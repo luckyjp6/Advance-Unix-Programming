@@ -7,14 +7,19 @@
 #include <dlfcn.h>
 #include <errno.h>
 #include <sys/mman.h>
+#include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <netdb.h>
+#include <arpa/inet.h>
 
 #if defined(__LP64__)
 #define ElfW(type) Elf64_ ## type
 #else
 #define ElfW(type) Elf32_ ## type
 #endif
+
+#define log_msg_len 200
 
 void errquit(char *msg) {
     perror(msg);
@@ -63,7 +68,7 @@ void print_log(char *msg, size_t len) {
     return;
 }
 
-int config(const char *wanted, const char* func_name) {
+int config(const char *wanted, const char* func_name, uint16_t wanted_port) {
     // get config file name
     char* config_name = getenv("SANDBOX_CONFIG");
 
@@ -81,17 +86,33 @@ int config(const char *wanted, const char* func_name) {
     char *d = data;
     while (d != NULL) {
         char* now = strtok_r(d, "\n", &d);
-        if (strcmp(now, begin) == 0) start = 1;
+        if (now == NULL) break;
+        if (strcmp(now, begin) == 0) { start = 1; continue;}
         if (strcmp(now, end) == 0) break;
         if (!start) continue;
 
-        if (strcmp(func_name, "open") == 0) {
+        if (strcmp(func_name, "open") == 0 || strcmp(func_name, "getaddrinfo") == 0) {
             if (strcmp(now, wanted) == 0) return -1;
         }
         else if (strcmp(func_name, "read") == 0){
-            if (strstr(wanted, now)) {
-                printf("here");
-                return -1;
+            if (strstr(wanted, now)) return -1;
+        }
+        else if (strcmp(func_name, "connect") == 0) {
+            // check port
+            int get_port;
+            char *host_name = strtok_r(now, ":", &now);
+            sscanf(now, "%d", &get_port);
+            if (get_port != wanted_port) continue;
+            
+            // check addr
+            struct hostent *host = gethostbyname(host_name);            
+            if (host == NULL) continue; //errquit("invalid host name");
+            for (int i = 0; ; i++) {
+                // uint32_t get_ip = htonl(host->h_addr_list[i]);
+                char ip[INET_ADDRSTRLEN+2];
+                if (host->h_addr_list[i] == NULL) break;
+                sprintf(ip, "%d.%d.%d.%d", (uint8_t)host->h_addr_list[i][0], (uint8_t)host->h_addr_list[i][1], (uint8_t)host->h_addr_list[i][2], (uint8_t)host->h_addr_list[i][3]);
+                if (strcmp(wanted, ip) == 0) return -1;
             }
         }
     }
@@ -100,21 +121,25 @@ int config(const char *wanted, const char* func_name) {
 }
 
 int my_open(const char *pathname, int flags, mode_t mode) {
-    // printf("my open\n");
-
     // set mode
     if (!((flags & O_CREAT) | (flags & O_TRUNC) | (flags & __O_TMPFILE))) mode = 0;
     
-    int result;
-    if (config(pathname, "open") > 0) {
-        result = open(pathname, flags, mode);
-    }else {
-        result = -1;
-        errno = EACCES;
-    }
-    
+    // get path
+    int result = open(pathname, flags, mode);
+    if (result > 0) {
+        char link_name[10000] = {0}, file_name[10000] = {0};
+        sprintf(link_name, "/proc/self/fd/%d", result);
+        readlink(link_name, file_name, 10000);
+
+        if (config(file_name, "open", 0) < 0) {
+            close(result);
+            result = -1;
+            errno = EACCES;
+        }
+    } 
+
     // logger msg
-    char logger_msg[100];
+    char logger_msg[log_msg_len];
     sprintf(logger_msg, "[logger] open(\"%s\", %d, %d) = %d\n", pathname, flags, mode, result);
     print_log(logger_msg, strlen(logger_msg));
 
@@ -125,36 +150,19 @@ ssize_t my_read(int fd, void *buf, size_t count) {
     // get pid
     int pid = getpid();
 
-    // get file name
-    // char look_up_name[50];
-    // sprintf(look_up_name, "/proc/self/fd/%d", fd);
-    // int look_up_fd = open(look_up_name, O_RDONLY);
-    // char get_name[50];
-    // read(look_up_fd, get_name, sizeof(get_name));
-    // get_name[strlen(get_name)-1] = 0;
-    // close(look_up_fd);
-
-    // char my_file_name[70];
-    // sprintf(my_file_name, "./%d-%d-read_%s.log", pid, fd, get_name);
-    // int my_log = open(my_file_name, O_WRONLY | O_CREAT | O_APPEND, S_IRWXU);
-    // if (my_log < 0) errquit("my log open");
-
     // check
     if (result > 0) {
         char log_name[50];
         sprintf(log_name, "./%d-%d-read.log", pid, fd);
         int log = open(log_name, O_WRONLY | O_CREAT | O_APPEND, S_IRWXU);
 
-        // get now position
-        char tmp[100000];
-        int now_off = lseek(fd, 0, SEEK_CUR);
-
         // get current file content
-        lseek(log, -now_off, SEEK_END);
-        read(log, tmp, now_off);
+        char tmp[100000] = {0};
+        lseek(log, 0, SEEK_SET);
+        read(log, tmp, sizeof(tmp));
         strcpy(tmp, buf);
 
-        if (config(tmp, "read") > 0) {
+        if (config(tmp, "read", 0) > 0) {
             lseek(log, 0, SEEK_END);
             write(log, buf, result);
         }else {
@@ -166,7 +174,7 @@ ssize_t my_read(int fd, void *buf, size_t count) {
     }
 
     // logger message
-    char logger[100];
+    char logger[log_msg_len];
     sprintf(logger, "[logger] read(%d, %p, %ld) = %d\n", fd, buf, count, result);
     print_log(logger, strlen(logger));
 
@@ -186,22 +194,56 @@ ssize_t my_write(int fd, void *buf, size_t count) {
     int result = write(fd, buf, count);
 
     // logger message
-    char logger[100];
+    char logger[log_msg_len];
     sprintf(logger, "[logger] write(%d, %p, %ld) = %d\n", fd, buf, count, result);
     print_log(logger, strlen(logger));
 
     return result;
 }
 int my_conn(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
-    static struct sockaddr_in addr_in;
-    memcpy(&addr_in, addr, addrlen);
-    printf("%s:%d", addr_in.sin_addr, addr_in.sin_port);
+    struct sockaddr_in addr_in;
+    memcpy(&addr_in, addr, sizeof(struct sockaddr_in));
 
-    return connect(sockfd, addr, addrlen);
+    // prepare ip and port
+    char ip[INET_ADDRSTRLEN];
+    uint16_t port;
+    inet_ntop (AF_INET, &addr_in.sin_addr, ip, sizeof (ip));
+    port = htons(addr_in.sin_port);
+
+    // check
+    int result;
+    if (config(ip, "connect", port) > 0) result = connect(sockfd, addr, addrlen);
+    else {
+        errno = ECONNREFUSED;   
+        result =  -1;
+    }
+
+    // logger message
+    char log_msg[log_msg_len];
+    sprintf(log_msg, "[logger] connect(%d, \"%s\", %d) = %d\n", sockfd, ip, addrlen, result);
+    print_log(log_msg, strlen(log_msg));
+
+    return result;
 }
 int my_getaddr (const char *restrict node, const char *restrict service, const struct addrinfo *restrict hints, struct addrinfo **restrict res){
-    printf("my_getaddr\n");
-    return getaddr(node, service, hints, res);
+    // check
+    int result = getaddrinfo(node, service, hints, res);
+    if (node != NULL) { if (config(node, "getaddrinfo", 0) < 0) result = EAI_NONAME; }
+    if (service != NULL) { if (config(service, "getaddrinfo", 0) < 0) result = EAI_NONAME; }
+    if (node == NULL && service == NULL) result = EAI_NONAME;
+    
+    // logger message
+    char log_msg[log_msg_len];
+    sprintf(log_msg, "[logger] getaddrinfo(\"%s\",\"%s\",%p,%p) = %d\n", node , "(null)", hints, res, result);
+    print_log(log_msg, strlen(log_msg));
+
+    return result;
+}
+int my_sys (const char *command) {
+    // logger message
+    char log_msg[log_msg_len];
+    sprintf(log_msg, "[logger] system(\"%s\")\n", command);
+    return system(command);
 }
 
 void get_write_previlage(long int addr) {
@@ -268,8 +310,12 @@ void parse_elf(const char* elf_file, long int start_addr) {
     uint16_t name_off = sym_name[0].st_shndx;
     // get section .dynstr
     if (lseek(fd, shdr[str_table_idx].sh_offset+name_off, SEEK_SET) < 0) errquit(".dynstr seek");
-    char names[20000];
+    char names[20000] = {0};
     read(fd, names, sizeof(names));
+    // for (int i = 0; i < 10000; i++) {
+    //     if (names[i] == 0) printf(" ");
+    //     else printf("%c", names[i]);
+    // }
     
     // get section .rela.plt
     const int record_num = shdr[rela_plt_idx].sh_size/sizeof(Elf64_Rela);
@@ -303,7 +349,6 @@ void parse_elf(const char* elf_file, long int start_addr) {
     return;
 }
 
-
 char* get_path(char *instruction, long int *start_addr) {
     int fd = open("/proc/self/maps", O_RDONLY);
     if (fd < 0) errquit("/proc/self/maps open");
@@ -331,19 +376,7 @@ int __libc_start_main(int (*main) (int, char * *, char * *), int argc, char * * 
     // for (int i = 0; i < argc; i++) printf("%d %s\n", i, argv[i]);
     long int start_addr;
     char *path = get_path(argv[0], &start_addr);
-    // char path[200];
-    // if (readlink("/proc/self/exe", path, sizeof(path)) < 0) errquit("readlink");
-    
     // printf("path: %s\n", path);
-    // printf("start addr: %lx\n", start_addr);
-    // handle = dlopen(path, RTLD_LAZY);
-    // if (*real_start)() = dlsym(handle, "path");
-    // void (*tmp)() = dlsym(handle, "open");
-    // if (tmp == NULL) {
-    //     dlclose(handle);
-    //     errquit("can't get open");
-    // }
-    // memcpy(my_open, &tmp) 
     
     parse_elf(path, start_addr);
 
