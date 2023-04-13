@@ -52,8 +52,48 @@ void print_section_type(Elf64_Shdr a) {
     printf("\n");
 }
 
+void config
+
 int my_open(const char *pathname, int flags, mode_t mode) {
     printf("my open\n");
+}
+
+ssize_t my_read(int fd, void *buf, size_t count) {
+    // get pid
+    int pid = getpid();
+
+    // get file name
+    char file_name[50];
+    sprintf(file_name, "./%d-%d-read.log", pid, fd);
+    int log = open(file_name, O_WRONLY | O_CREAT | O_APPEND, S_IRWXU);
+    if (log < 0) errquit("log open");
+    if (write(log, buf, count) < 0) errquit("read_log write");
+    close(log);
+    int result = read(fd, buf, count);
+
+    // logger message
+    char logger[100];
+    sprintf(logger, "[logger] write(%d, %p, %ld) = %d\n", fd, buf, count, result);
+    if (write(fd, logger, strlen(logger)) < 0) errquit("logger write");
+}
+
+ssize_t my_write(int fd, void *buf, size_t count) {
+    // get pid
+    int pid = getpid();
+
+    // get file name
+    char file_name[50];
+    sprintf(file_name, "./%d-%d-write.log", pid, fd);
+    int log = open(file_name, O_WRONLY | O_CREAT | O_APPEND, S_IRWXU);
+    if (log < 0) errquit("log open");
+    if (write(log, buf, count) < 0) errquit("write_log write");
+    close(log);
+    int result = write(fd, buf, count);
+
+    // logger message
+    char logger[100];
+    sprintf(logger, "[logger] write(%d, %p, %ld) = %d\n", fd, buf, count, result);
+    if (write(fd, logger, strlen(logger)) < 0) errquit("logger write");
 }
 
 void get_write_previlage(long int addr, int recover) {
