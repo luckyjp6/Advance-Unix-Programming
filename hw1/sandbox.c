@@ -187,7 +187,7 @@ ssize_t my_read(int fd, void *buf, size_t count) {
         if (lseek(log, -now_count, SEEK_END) < 0) errquit("seek log");
         // lseek(log, 0, SEEK_SET);
         if (read(log, tmp, now_count) < 0) errquit("read log");
-        sprintf(tmp, "%s%s", tmp, buf);
+        sprintf(tmp, "%s%s", tmp, (char *)buf);
         // strcpy(tmp, buf);
 
         // printf("\t##check(%ld): %s\n", now_count, tmp);
@@ -273,6 +273,7 @@ int my_sys (const char *command) {
     // logger message
     char log_msg[log_msg_len];
     sprintf(log_msg, "[logger] system(\"%s\")\n", command);
+    print_log(log_msg, strlen(log_msg));
     return system(command);
 }
 int my_close(int fd) {
@@ -326,11 +327,13 @@ void parse_elf(const char* elf_file, long int start_addr) {
     // for (int i = 0; i < section_hdr_num; i++) { printf("%s\t", &name_table[shdr[i].sh_name]); print_section_type(shdr[i]);}
 
     // get section idx
-    int rela_plt_idx, sym_table_idx, str_table_idx, plt_got_idx;
+    int rela_plt_idx = -1, sym_table_idx = -1, str_table_idx = -1;
     for (int i = 0; i < section_hdr_num; i++) {
         if (strcmp(&name_table[shdr[i].sh_name], ".rela.plt") == 0) rela_plt_idx = i;
         if (strcmp(&name_table[shdr[i].sh_name], ".dynsym") == 0) sym_table_idx = i;
-        if (strcmp(&name_table[shdr[i].sh_name], ".dynstr") == 0) str_table_idx = i;    
+        if (strcmp(&name_table[shdr[i].sh_name], ".dynstr") == 0) str_table_idx = i;  
+        // if (strcmp(&name_table[shdr[i].sh_name], ".symtab") == 0) sym_table_idx = i;
+        // if (strcmp(&name_table[shdr[i].sh_name], ".strtab") == 0) str_table_idx = i;    
         // if (strcmp(&name_table[shdr[i].sh_name], ".shstrtab") == 0) str_table_idx = i;    
     }
     if (rela_plt_idx < 0) errquit(".rela.plt not found");
@@ -344,7 +347,8 @@ void parse_elf(const char* elf_file, long int start_addr) {
 
     // get section .dynstr
     uint16_t name_off = sym_name[0].st_shndx;
-    if (lseek(fd, shdr[str_table_idx].sh_offset+name_off, SEEK_SET) < 0) errquit(".dynstr seek");
+    printf("name off: %d, shdr: %d\n", name_off, str_table_idx);
+    if (lseek(fd, shdr[str_table_idx].sh_offset, SEEK_SET) < 0) errquit(".dynstr seek");
     char names[20000] = {0};
     read(fd, names, sizeof(names));
     // for (int i = 0; i < shdr[str_table_idx].sh_offset; i++) {
@@ -363,7 +367,7 @@ void parse_elf(const char* elf_file, long int start_addr) {
     if (lseek(fd, shdr[rela_plt_idx].sh_offset, SEEK_SET) < 0) errquit(".rela.plt seek");
     if (read(fd, &record, shdr[rela_plt_idx].sh_size) < 0) errquit(".rela.plt read");
     
-    int open_idx, read_idx, write_idx, conn_idx, getaddr_idx, sys_idx, close_idx;
+    int open_idx = -1, read_idx = -1, write_idx = -1, conn_idx = -1, getaddr_idx = -1, sys_idx = -1, close_idx = -1;
     for (int i = 0; i < record_num; i++) {
     // printf("%d:\t", i);
     // printf("%s\n", names+sym_name[ELF64_R_SYM(record[i].r_info)].st_name);
@@ -379,15 +383,15 @@ void parse_elf(const char* elf_file, long int start_addr) {
         //     record[i].r_addend, names+sym_name[ELF64_R_SYM(record[i].r_info)].st_name);
     }
 
-    if (open_idx > 0) replace(start_addr+record[open_idx].r_offset, "my_open");
-    if (read_idx > 0) replace(start_addr+record[read_idx].r_offset, "my_read");
-    if (write_idx > 0) replace(start_addr+record[write_idx].r_offset, "my_write");
-    if (conn_idx > 0) replace(start_addr+record[conn_idx].r_offset, "my_conn");
-    if (getaddr_idx > 0) replace(start_addr+record[getaddr_idx].r_offset, "my_getaddr");
-    if (sys_idx > 0) replace(start_addr+record[sys_idx].r_offset, "my_sys");
-    if (close_idx > 0) replace(start_addr+record[close_idx].r_offset, "my_close");
+    if (open_idx >= 0) replace(start_addr+record[open_idx].r_offset, "my_open");
+    if (read_idx >= 0) replace(start_addr+record[read_idx].r_offset, "my_read");
+    if (write_idx >= 0) replace(start_addr+record[write_idx].r_offset, "my_write");
+    if (conn_idx >= 0) replace(start_addr+record[conn_idx].r_offset, "my_conn");
+    if (getaddr_idx >= 0) replace(start_addr+record[getaddr_idx].r_offset, "my_getaddr");
+    if (sys_idx >= 0) replace(start_addr+record[sys_idx].r_offset, "my_sys");
+    if (close_idx >= 0) replace(start_addr+record[close_idx].r_offset, "my_close");
 
-    
+    printf("\n\n");
     close(fd);
     return;
 }
@@ -402,7 +406,7 @@ char* get_path(char *instruction, long int *start_addr) {
         sscanf(instruction, ".%s", ins_name);
         getcwd(cwd, sizeof(cwd));
         sprintf(instruction, "%s%s", cwd, ins_name);
-        printf("%s\n", instruction);
+        // printf("%s\n", instruction);
     }
     while ((record = strtok_r(cnt, "\n\r", &cnt)) != NULL) {
         if (strstr(buf, instruction) == NULL) continue;
@@ -426,7 +430,7 @@ int __libc_start_main(int (*main) (int, char * *, char * *), int argc, char * * 
     // for (int i = 0; i < argc; i++) printf("%d %s\n", i, argv[i]);
     long int start_addr;
     char *path = get_path(argv[0], &start_addr);
-    printf("path: %s\n", path);
+    // printf("path: %s\n", path);
     
     parse_elf(path, start_addr);
 
