@@ -341,15 +341,16 @@ void parse_elf(const char* elf_file, long int start_addr) {
     if (str_table_idx < 0) errquit(".dynstr not found");
 
     // get section .dynsym
-    Elf64_Sym sym_name[1000];
+    Elf64_Sym sym_name[10000];
+    // printf("####%x\n", shdr[sym_table_idx].sh_size);
     if (lseek(fd, shdr[sym_table_idx].sh_offset, SEEK_SET) < 0) errquit(".dynsym seek");
     if (read(fd, &sym_name, shdr[sym_table_idx].sh_size) < 0) errquit(".dynsym read");
 
     // get section .dynstr
     uint16_t name_off = sym_name[0].st_shndx;
-    printf("name off: %d, shdr: %d\n", name_off, str_table_idx);
-    if (lseek(fd, shdr[str_table_idx].sh_offset, SEEK_SET) < 0) errquit(".dynstr seek");
-    char names[20000] = {0};
+    // printf("name off: %d, shdr: %d\n", name_off, str_table_idx);
+    if (lseek(fd, shdr[str_table_idx].sh_offset+name_off, SEEK_SET) < 0) errquit(".dynstr seek");
+    char names[200000] = {0};
     read(fd, names, sizeof(names));
     // for (int i = 0; i < shdr[str_table_idx].sh_offset; i++) {
     //     if (names[i] == 0) printf(" ");
@@ -360,17 +361,15 @@ void parse_elf(const char* elf_file, long int start_addr) {
 
     // get section .rela.plt
     const uint64_t record_num = shdr[rela_plt_idx].sh_size/sizeof(Elf64_Rela);
-    printf("rela size: %ld\n", sizeof(Elf64_Rela));
-    printf("rela plt idx: %d\n", rela_plt_idx);
-    printf("rela plt num: %ld\n", record_num);
-    Elf64_Rela record[record_num];
+    // printf("rela plt num: %ld(%ld)\n", record_num, shdr[rela_plt_idx].sh_size);
+    Elf64_Rela record[5000];
     if (lseek(fd, shdr[rela_plt_idx].sh_offset, SEEK_SET) < 0) errquit(".rela.plt seek");
     if (read(fd, &record, shdr[rela_plt_idx].sh_size) < 0) errquit(".rela.plt read");
     
     int open_idx = -1, read_idx = -1, write_idx = -1, conn_idx = -1, getaddr_idx = -1, sys_idx = -1, close_idx = -1;
     for (int i = 0; i < record_num; i++) {
-    // printf("%d:\t", i);
-    // printf("%s\n", names+sym_name[ELF64_R_SYM(record[i].r_info)].st_name);
+        // printf("%s\n", names+sym_name[ELF64_R_SYM(record[i].r_info)].st_name);
+        // if (strstr(names+sym_name[ELF64_R_SYM(record[i].r_info)].st_name, "open") != NULL) printf("%s\n", names+sym_name[ELF64_R_SYM(record[i].r_info)].st_name);
         if (strcmp("open", names+sym_name[ELF64_R_SYM(record[i].r_info)].st_name) == 0) open_idx = i;
         if (strcmp("read", names+sym_name[ELF64_R_SYM(record[i].r_info)].st_name) == 0) read_idx = i;
         if (strcmp("write", names+sym_name[ELF64_R_SYM(record[i].r_info)].st_name) == 0) write_idx = i;
@@ -391,7 +390,6 @@ void parse_elf(const char* elf_file, long int start_addr) {
     if (sys_idx >= 0) replace(start_addr+record[sys_idx].r_offset, "my_sys");
     if (close_idx >= 0) replace(start_addr+record[close_idx].r_offset, "my_close");
 
-    printf("\n\n");
     close(fd);
     return;
 }
