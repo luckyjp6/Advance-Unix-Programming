@@ -13,7 +13,8 @@
 csh cs_handle;
 pid_t child;
 int child_stat;
-struct user_regs_struct regs;
+struct user_regs_struct regs, anchor_regs;
+char cmd[100];
 
 int bps_idx = 0;
 struct break_point{
@@ -76,8 +77,11 @@ void recover_break(int idx) {
 
     /* recover original instruction */
     if (ptrace(PTRACE_POKETEXT, child, bps[idx].addr, (tmp_codes & 0xffffffffffffff00) | bps[idx].value) < 0) err_quit("ptrace poketext");
-    regs.rip --;
-    if (ptrace(PTRACE_SETREGS, child, 0, &regs) < 0) err_quit("ptrace set regs");
+    if (memcmp(cmd, "cont", 4) == 0) {
+        printf("is cont\n");
+        regs.rip --;
+        if (ptrace(PTRACE_SETREGS, child, 0, &regs) < 0) err_quit("ptrace set regs");
+    }
 
     printf("** hit a breakpoint at 0x%llx\n", bps[idx].addr);
 
@@ -85,6 +89,16 @@ void recover_break(int idx) {
     return;
 }
 
+int check_bp(unsigned long long int now) {
+    for (int i = 0; i < bps_idx; i++) {
+        if ((bps[i].addr == -1) && (bps[i].value == -1)) continue;
+        if (bps[i].addr == now) {
+            // recover_break(i);
+            return i;
+        }
+    }
+    return -1;
+}
 int wait_stop() {
     
     if (waitpid(child, &child_stat, 0) < 0) err_quit("waitpid");
@@ -106,6 +120,11 @@ void print_insturctions() {
         if (tmp_codes == 0) break;
         for (int i = 0; i < 8; i++) {
             codes[t*8+i] = tmp_codes & 0xff;
+            if (codes[t*8+i] == 0xcc) {
+                int idx = check_bp(regs.rip + t*8 + i);
+                if (idx >= 0) codes[t*8+i] = bps[idx].value;
+            }
+
             tmp_codes = tmp_codes >> 8;
         }
     }
@@ -121,25 +140,13 @@ void print_insturctions() {
         }
         printf("\t%lx: ", insns[i].address);
         for (int j = 0; j < 10; j++) {
-            if (j < insns[i].size)
-                printf("%02x ", insns[i].bytes[j]);
-            else
-                printf("   ");
+            if (j < insns[i].size) printf("%02x ", insns[i].bytes[j]);
+            else printf("   ");
         }
         printf("%-12s %s\n",insns[i].mnemonic,insns[i].op_str);
     }
     cs_free(insns, num_ins);
     return;
-}
-void check_bp() {
-    unsigned long long int now = regs.rip -1;
-    for (int i = 0; i < bps_idx; i++) {
-        if ((bps[i].addr == -1) && (bps[i].value == -1)) continue;
-        if (bps[i].addr == now) {
-            recover_break(i);
-            return;
-        }
-    }
 }
 int do_next() {
     /* wait client end */
@@ -148,12 +155,14 @@ int do_next() {
     /* get new args */
     read_args();
 
-    check_bp();
+    int idx;
+    if (memcmp(cmd, "cont", 4) == 0) idx = check_bp(regs.rip -1);
+    if (memcmp(cmd, "si", 2) == 0) idx = check_bp(regs.rip);
+    if (idx >= 0) recover_break(idx);
 
     print_insturctions();
     return 0;
 }
-
 
 int main(int argc, char **argv) {
     if (argc < 2) {
@@ -170,8 +179,6 @@ int main(int argc, char **argv) {
         execvp(argv[1], argv+1);
         err_quit("execvp");
     }
-    open()
-
 
     /* clear bps */
     for (int i = 0; i < 1000; i++) clear_bp(i);
@@ -187,6 +194,17 @@ int main(int argc, char **argv) {
     if (ptrace(PTRACE_SETOPTIONS, child, 0, PTRACE_O_EXITKILL) < 0) err_quit("ptrace set options");
     if (!WIFSTOPPED(child_stat)) err_quit("child not stop");
 
+    // int fd;
+    // char path[100] = {0}, buf[200000];
+    // sprintf(path, "/proc/%d/maps", child);
+    // fd = open(path, O_RDONLY);
+    // if (fd < 0) err_quit("open child maps");
+    // printf("open at %d\n", fd); fflush(stdout);
+    // int r_len = read(fd, buf, sizeof(buf));
+    // if (r_len < 0) err_quit("read child maps");
+    // if (r_len == 0) err_quit("EOF??");
+    // write(1, buf, r_len);
+
     /* start child */
     read_args();
     entry_point = regs.rip;
@@ -194,7 +212,7 @@ int main(int argc, char **argv) {
     print_insturctions();
     while (true) {
         int cmd_len, now_bp;
-        char cmd[100] = {0};
+        memset(cmd, 0, 100);
 
         printf("(sdb): "); fflush(stdout);
         cmd_len = read(0, cmd, 100);
@@ -215,6 +233,13 @@ int main(int argc, char **argv) {
             char *tmp_cmd = strtok_r(location, " ", &location);
             sscanf(location, "%llx", &b_addr);
             set_break(b_addr);
+        }else if (memcmp(cmd, "anchor", 6) == 0) {
+            if (ptrace(PTRACE_GETREGS, child, 0, &anchor_regs) < 0) err_quit("ptrace get regs");
+            printf("** dropped an anchor\n");
+        }else if (memcmp(cmd, "timetravel", 10) == 0) {
+            if (ptrace(PTRACE_SETREGS, child, 0, &anchor_regs) < 0) err_quit("ptrace set regs");      
+            printf("** go back to the anchor point\n");
+            print_insturctions();
         }
 
         fflush(stdout);
@@ -223,11 +248,3 @@ int main(int argc, char **argv) {
     cs_close(&cs_handle);
     return 0;
 }
-
-// 101100101
-
-// 110010111
-// 110010101
-
-// 101101010
-// 101101000
