@@ -8,6 +8,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <string.h>
 #include <capstone/capstone.h>
 
 csh cs_handle;
@@ -21,12 +22,22 @@ struct break_point{
     unsigned long long int addr;
     uint8_t value;
 }bps[1000];
+struct Backup
+{
+    char data[200000];
+    long start_addr;
+    long length;
+}backups[5];
+int backups_idx = 0;
+
 void clear_bp(int idx);
 int get_empty_bp();
 
 void err_quit(char *msg);
 
 void read_args();
+void read_backups();
+void write_backups();
 
 void set_break(unsigned long long int b_addr, bool is_new);
 void recover_break(int idx, bool msg);
@@ -66,16 +77,43 @@ int main(int argc, char **argv) {
     if (ptrace(PTRACE_SETOPTIONS, child, 0, PTRACE_O_EXITKILL) < 0) err_quit("ptrace set options");
     if (!WIFSTOPPED(child_stat)) err_quit("child not stop");
 
-    // int fd;
-    // char path[100] = {0}, buf[200000];
-    // sprintf(path, "/proc/%d/maps", child);
-    // fd = open(path, O_RDONLY);
-    // if (fd < 0) err_quit("open child maps");
+    int fd;
+    char path[100] = {0}, buf[200000];
+    sprintf(path, "/proc/%d/maps", child);
+    fd = open(path, O_RDONLY);
+    if (fd < 0) err_quit("open child maps");
     // printf("open at %d\n", fd); fflush(stdout);
-    // int r_len = read(fd, buf, sizeof(buf));
-    // if (r_len < 0) err_quit("read child maps");
-    // if (r_len == 0) err_quit("EOF??");
+    int r_len = read(fd, buf, sizeof(buf));
+    if (r_len < 0) err_quit("read child maps");
+    if (r_len == 0) err_quit("EOF??");
     // write(1, buf, r_len);
+    char *line, *b = buf;
+    while ((line = strtok_r(b, "\r\n", &b)) != NULL) {
+        if ((strstr(line, "rwxp") != NULL) || (strstr(line, "rw-p") != NULL)) {
+            long end_addr;
+            int offset;
+            char *tmp;
+            // 7fff6e6cf000-7fff6e6f1000 rwxp 00000000 00:00 0     [stack]
+            // get start addr
+            tmp = strtok_r(line, "-", &line);
+            sscanf(tmp, "%lx", &backups[backups_idx].start_addr);
+
+            tmp = strtok_r(line, " ", &line);
+            sscanf(tmp, "%lx", &end_addr);
+
+            // add offset
+            tmp = strtok_r(line, " ", &line); // "rwxp"
+            tmp = strtok_r(line, " ", &line); // offset
+            sscanf(tmp, "%x", &offset);
+            backups[backups_idx].start_addr += offset;
+
+            // get length
+            backups[backups_idx].length = end_addr - backups[backups_idx].start_addr;
+
+            // printf("start addr: %lx, end addr: %lx, offset: %x, length: %lx\n", backups[backups_idx].start_addr, end_addr, offset, backups[backups_idx].length);
+            backups_idx++;
+        }
+    }
 
     /* start child */
     read_args();
@@ -95,8 +133,7 @@ int main(int argc, char **argv) {
         else if (memcmp(cmd, "si", 2) == 0) {
             if (ptrace(PTRACE_SINGLESTEP, child, 0, 0) < 0) err_quit("single step");
             if (do_next() > 0) break; // client exit
-        }
-        else if (memcmp(cmd, "cont", 4) == 0) {
+        } else if (memcmp(cmd, "cont", 4) == 0) {
             /* single step and recover break point */
             if (ptrace(PTRACE_SINGLESTEP, child, 0, 0) < 0) err_quit("single step");
             if (wait_stop() > 0) break;
@@ -110,17 +147,18 @@ int main(int argc, char **argv) {
             if (idx >= 0) recover_break(idx, true);
             else { if (ptrace(PTRACE_CONT, child, 0, 0) < 0) err_quit("cont"); }
             if (do_next() > 0) break; // client exit
-        }else if (memcmp(cmd, "break", 5) == 0) {
+        } else if (memcmp(cmd, "break", 5) == 0) {
             unsigned long long int b_addr;
             char *location = cmd;
             char *tmp_cmd = strtok_r(location, " ", &location);
             sscanf(location, "%llx", &b_addr);
             if (check_bp(b_addr) < 0) set_break(b_addr, true);
             else printf("** set a breakpoint at 0x%llx.\n", b_addr);
-        }else if (memcmp(cmd, "anchor", 6) == 0) {
+        } else if (memcmp(cmd, "anchor", 6) == 0) {
             if (ptrace(PTRACE_GETREGS, child, 0, &anchor_regs) < 0) err_quit("ptrace get regs");
+            read_backups();
             printf("** dropped an anchor\n");
-        }else if (memcmp(cmd, "timetravel", 10) == 0) {
+        } else if (memcmp(cmd, "timetravel", 10) == 0) {
             if (ptrace(PTRACE_SETREGS, child, 0, &anchor_regs) < 0) err_quit("ptrace set regs");      
             printf("** go back to the anchor point\n");
             read_args();
@@ -130,11 +168,15 @@ int main(int argc, char **argv) {
                 wait_to_set = -1;
             }
             
+            write_backups();
             int idx = check_bp(regs.rip);
             if (idx >= 0) recover_break(idx, false);
 
             print_insturctions();
-        }
+        } //else if (memcmp(cmd, "print_rbx", 10) == 0) {
+            read_args();
+            printf("rbx: %llx\n", regs.rbx);
+        // }
 
         fflush(stdout);
     }
@@ -170,6 +212,24 @@ void err_quit(char *msg) {
 void read_args() {
     if (ptrace(PTRACE_GETREGS, child, 0, &regs) < 0) err_quit("ptrace get regs");
 }
+void read_backups() {
+    for (int i = 0; i < backups_idx; i++) {
+        for (int offset = 0; offset < backups[i].length; offset += 8) {
+            long tmp = ptrace(PTRACE_PEEKTEXT, child, backups[i].start_addr+offset);
+            memcpy(backups[i].data + offset, &tmp, 8);
+        }
+    }
+}
+void write_backups() {
+    for (int i = 0; i < backups_idx; i++) {
+        for (int offset = 0; offset < backups[i].length; offset += 8) {
+            long tmp;
+            memcpy(&tmp, backups[i].data + offset, 8);
+            if (ptrace(PTRACE_POKETEXT, child, backups[i].start_addr+offset, tmp) < 0) err_quit("ptrace poketext");
+        }
+    }
+}
+
 
 void set_break(unsigned long long int b_addr, bool is_new) {
     /* get original instruction */
@@ -244,6 +304,7 @@ void print_insturctions() {
     for (int t = 0; t < 8; t++) {
         long tmp_codes = 0;
         tmp_codes = ptrace(PTRACE_PEEKTEXT, child, regs.rip+t*8, 0);
+        // memcpy(codes+(t*8), &tmp_codes, 8);
         if (tmp_codes == 0) break;
         for (int i = 0; i < 8; i++) {
             codes[t*8+i] = tmp_codes & 0xff;
@@ -255,6 +316,7 @@ void print_insturctions() {
             tmp_codes = tmp_codes >> 8;
         }
     }
+    
     // if (errno == ESRCH) ??? not sure
     if ((num_ins = cs_disasm(cs_handle, codes, 64*sizeof(uint8_t), regs.rip, 0, &insns)) < 0) err_quit("cs disasm");
 
