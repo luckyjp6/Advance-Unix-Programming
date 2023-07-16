@@ -15,13 +15,12 @@ def solve_pow(r):
         if h[:6] == '000000':
             solved = str(i).encode()
             print("solved =", solved)
-            break;
+            break
     print(time.time(), "done.")
 
     r.sendlineafter(b'string S: ', base64.b64encode(solved))
 
 if __name__ == '__main__':
-    #r = remote('localhost', 10330);
     r = remote('up23.zoolab.org', 10330)
     solve_pow(r)
     r.interactive()

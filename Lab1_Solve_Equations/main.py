@@ -4,10 +4,8 @@
 import base64
 import hashlib
 import time
-import struct
 from pwn import *
 
-#r = remote('localhost', 10011)
 r = remote('up23.zoolab.org', 10363)
 
 def solve_pow():
@@ -24,31 +22,30 @@ def solve_pow():
 
     r.sendlineafter(b'string S: ', base64.b64encode(solved))
 
+
+
 solve_pow()
-# r.interactive()
+
+# get num of the equations
 r.recvuntil("Please complete the ")
-times = int(r.recvuntil(" "))
-# times = 1
-print("times", times)
+num = int(r.recvuntil(" "))
+print("num", num)
 
-for i in range(times):
+for i in range(num):
+    # get each equation
     r.recvuntil(": ")
-    calcu = r.recvuntil(" =").decode()
+    calcu = r.recvuntil(" =").decode() # 9982713419868 // 35719794 =
 
-    # calcu = "9982713419868 // 35719794 ="
-    # print(calcu[0:-2], "##")
-    # print(base64.b64encode(struct.pack("<q",int(eval(calcu[0:-2])))))
-    ans = int(eval(calcu[0:-2]))
-    # print("ans", ans)
+    ans = int(eval(calcu[0:-2])) # 9982713419868 // 35719794
 
     nn, remain = divmod(ans.bit_length(), 8)
     if remain: nn = nn +1
 
     r.sendline(base64.b64encode(ans.to_bytes(nn, byteorder = 'little')))
 
+# get flag
 flg = r.recvline().decode()
 print(flg)
-# r.interactive()
 r.close()
 
 # vim: set tabstop=4 expandtab shiftwidth=4 softtabstop=4 number cindent fileencoding=utf-8 :

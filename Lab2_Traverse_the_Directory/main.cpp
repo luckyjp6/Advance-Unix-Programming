@@ -10,41 +10,41 @@ using namespace std;
 int get = 0;
 int satisify;
 
-void read_dir(char *name, char *want) {
-    DIR *dir = opendir(name);
+void read_dir(char *dir_path, char *want) {
+    DIR *dir = opendir(dir_path);
     if (dir == NULL) {
         cerr << "fail to get directory" << endl;
         return;
     } else {
-        cerr << "successfully open dir: " << name << endl;
+        cerr << "successfully open dir: " << dir_path << endl;
     }
 
-    // for (int i = 0; i < 2; i++) readdir(dir);
+    // traverse all the files
     while(1) {
         struct dirent *f;
-        f = readdir(dir);
-        if (f == NULL) break;
-        if (strcmp(f->d_name, "..")==0 || strcmp(f->d_name, ".")==0) {
-            // cerr << "######################" << endl;
-            continue;
-        }
         char pwd[2000];
-        sprintf(pwd, "%s/%s", name, f->d_name);
-        cerr << "get file name: " << f->d_name << endl;
+        f = readdir(dir);
         
+        // end condition
+        if (f == NULL) break;
+        // skip "." and ".."
+        if (strcmp(f->d_name, "..")==0 || strcmp(f->d_name, ".")==0) continue; 
+
+        // get file path
+        sprintf(pwd, "%s/%s", dir_path, f->d_name);
+        
+        // for directory
         if (f->d_type == DT_DIR) {
             read_dir(pwd, want); 
             continue;
         }
-        // if (f->d_type != DT_REG) continue;
-        // struct stat buf[10000];
-        // lstat(pwd, buf);
+        
+        // for files
         int fd = open(pwd, O_RDONLY);
+        char *c, content[10000];
         if (fd < 0) continue;
-
-        char content[10000];
-        read(fd, content, 1000);
-        char* c = strstr(content, want);
+        read(fd, content, 10000);
+        c = strstr(content, want);
         if (c != NULL) cout << pwd << endl;
         close(fd);
         cerr << "does not find magic numer" << endl;

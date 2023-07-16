@@ -5,6 +5,7 @@
  */
 #include <stdio.h>
 #include "libpoem.h"
+// libpoem includes the definition of init() and all of code_xxx()
 
 int main() {
 	long long x = 0LL;
