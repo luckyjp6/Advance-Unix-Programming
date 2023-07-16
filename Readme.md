@@ -1,5 +1,5 @@
 # Advance-Unix-Programming
-此repo收錄由黃俊穎老師開設的高等Unix課程的lab。  
+此repo收錄高等Unix課程的lab。  
 
 Lab以類似CTF的形式進行，按spec要求和題目機互動或上傳code解題來獲取flag（題目機使用proof-of-work機制避免伺服器崩潰），大量使用python pwntool套件，此外還學習到的許多其他知識，包括但不限於：Assembly language、GOT、cannary & buffer overflow、kernel module、ROP和Ptrace。
 
