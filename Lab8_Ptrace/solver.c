@@ -40,17 +40,22 @@ int main(int argc, char **argv) {
     unsigned long long int reset_rip;
     unsigned long long int magic_addr;
 
+    if (argc < 2) {
+        printf("Usage: ./solver <sample exe>");
+        return 0;
+    }
+
     if((child = fork()) < 0) err_quit("fork");
     if (child == 0) {
         if (ptrace(PTRACE_TRACEME, 0, 0, 0) < 0) err_quit("ptrace traceme");
         execvp(argv[1], argv+1);
         err_quit("execvp");
     }
-    // if (ptrace(PTRACE_ATTACH, child, 0, 0) < 0) err_quit("ptrace attach");
     
     if (waitpid(child, &child_stat, 0) < 0) err_quit("waitpid");
     if (ptrace(PTRACE_SETOPTIONS, child, 0, PTRACE_O_EXITKILL) < 0) err_quit("ptrace set options");
     if (!WIFSTOPPED(child_stat)) err_quit("child not stop");
+    
     /* start child*/
     do_next();
 
@@ -58,17 +63,13 @@ int main(int argc, char **argv) {
     if (ptrace(PTRACE_GETREGS, child, 0, &regs) < 0) err_quit("ptrace get regs");
     unsigned long int tmp_codes;
     tmp_codes = ptrace(PTRACE_PEEKTEXT, child, regs.rip+17, 0);
-    // printf("get codes    : %lx\n", tmp_codes);
     if (ptrace(PTRACE_POKETEXT, child, regs.rip+17, (tmp_codes & 0xffffffffffffff00) | 0xcc) < 0) err_quit("ptrace poketext");
     do_next();
     read_args();
     magic_addr = regs.rax;
     regs.rip -= 1;
     if (ptrace(PTRACE_SETREGS, child, 0, &regs) < 0) err_quit("ptrace set regs");
-    // printf("altered codes: %lx\n", ptrace(PTRACE_PEEKTEXT, child, regs.rip, 0));
-    // read_args();
     if (ptrace(PTRACE_POKETEXT, child, regs.rip, tmp_codes) < 0) err_quit("ptrace poketext");
-    // printf("revover codes: %lx\n", ptrace(PTRACE_PEEKTEXT, child, regs.rip, 0));
 
     do_next();
     do_next();
@@ -76,13 +77,12 @@ int main(int argc, char **argv) {
     /* recored rip for reset */
     if (ptrace(PTRACE_GETREGS, child, 0, &regs) < 0) err_quit("ptrace get regs");
     reset_rip = regs.rip;
-    printf("reset rip: %llx\n", reset_rip);
 
     regs.rip = reset_rip;    
     if (ptrace(PTRACE_SETREGS, child, 0, &regs) < 0) err_quit("ptrace set regs");
+    
     /* out of if-else */
     for (int m = 0; m < 512; m++) {
-        // unsigned long filled = 0x3030303030303030;
         set_magic(m);
         if (ptrace(PTRACE_POKETEXT, child, magic_addr, magic) < 0) err_quit("ptrace poketext");
         if (m > 255) {
@@ -95,28 +95,17 @@ int main(int argc, char **argv) {
         do_next();
         
         read_args();
-        if (regs.rax == 0) break;
-        // printf("get rax: %llx\n", regs.rax);
+        if (regs.rax == 0) break; // get Bingo, exit
 
         regs.rip = reset_rip;    
         if (ptrace(PTRACE_SETREGS, child, 0, &regs) < 0) err_quit("ptrace set regs");
-        // do_next();
     }
     
     /* print "Magic evaluated" */
     do_next();
 
-    // printf("continue count: %d\n", con_counts);
     perror("done");
 
 
     return 0;
 }
-
-// 101100101
-
-// 110010111
-// 110010101
-
-// 101101010
-// 101101000
